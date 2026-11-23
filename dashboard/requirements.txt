@@ -1,0 +1,7 @@
+# Dependencies of the Streamlit dashboard only (used by Streamlit Community Cloud).
+# No PyTorch / scikit-learn needed: the dashboard just reads the files in outputs/.
+streamlit>=1.32
+plotly>=5.18
+pandas>=2.0
+numpy>=1.24
+matplotlib>=3.7

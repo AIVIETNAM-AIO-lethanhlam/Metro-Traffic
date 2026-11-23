@@ -1,0 +1,17 @@
+{
+  "key": "TCN",
+  "name": "DL-TCN",
+  "val_MAE": 214.3956656711328,
+  "spec": {
+    "kind": "TCN",
+    "hp": {
+      "channels": 64,
+      "kernel": 3,
+      "dropout": 0.1
+    },
+    "lr": 0.001,
+    "wd": 0.0001,
+    "batch_size": 256,
+    "head_hidden": 256
+  }
+}

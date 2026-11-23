@@ -1,0 +1,12 @@
+[
+  "Daily-naive",
+  "Seasonal-naive (weekly)",
+  "Ridge (linear, lags)",
+  "DL-MLP",
+  "DL-LSTM",
+  "DL-GRU",
+  "DL-TCN",
+  "DL-PatchTransformer",
+  "DL-GRU (tuned)",
+  "Ablation: DL-TCN without weather"
+]

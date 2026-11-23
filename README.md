@@ -1,5 +1,9 @@
 # Hourly Traffic Volume Forecasting on I-94 with Deep Learning
 
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://metro-traffic-eizdmd8ishaymreetxc3ez.streamlit.app/)
+
+**Live dashboard:** <https://metro-traffic-eizdmd8ishaymreetxc3ez.streamlit.app/>
+
 P4AIDS (Python for AI and Data Science, HCMUT) assignment — **Demand Forecasting** topic.
 
 Given the last 168 hours of traffic, weather and calendar data plus the known calendar of the next 24 hours,
@@ -89,7 +93,7 @@ or click **Export figures, tables & summary** in the dashboard sidebar. `result/
 2. Go to <https://share.streamlit.io>, sign in with GitHub, click **Create app → Deploy a public app from GitHub**.
 3. Repository: your repo · Branch: `main` · Main file path: `dashboard/app.py` · (Advanced settings: Python 3.11).
 4. Click **Deploy**. Dependencies come from `dashboard/requirements.txt` (no PyTorch), the theme from `.streamlit/config.toml`.
-5. Share the `https://<your-app>.streamlit.app` link. Every `git push` redeploys the app automatically.
+5. Share the app link — this project is live at <https://metro-traffic-eizdmd8ishaymreetxc3ez.streamlit.app/>. Every `git push` redeploys the app automatically.
 
 ## Method summary
 - **Cleaning:** 7,629 duplicated timestamps merged (weather labels → multi-hot); sensor errors fixed; hourly grid;

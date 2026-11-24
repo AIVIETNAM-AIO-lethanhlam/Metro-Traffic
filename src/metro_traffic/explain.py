@@ -1,101 +1,84 @@
-"""Model explanation: permutation feature importance and Integrated Gradients."""
+"""Explanations of the selected DL model (docs/methodology.md §7, group explain.py).
+
+* Integrated Gradients: 256 random test windows (rng seed 42), 24 integration steps
+  (alpha = linspace(0, 1, 24)), zero baseline in standardised space. |IG| is averaged over the
+  windows and then aggregated by feature (mean over the 168 positions) and by lag (mean over
+  features), in standardised units, as in the group code.
+* Weather occlusion: on the same windows, replace each weather category by the unknown token and
+  measure the mean absolute change of the prediction.
+
+The group explains the seed-42 fine-tuned checkpoint; here the explanation covers the fine-tuned
+seed ensemble that produces the reported forecast (post-merge plan 4.2). IG is linear in the
+model output, so the ensemble IG is the mean of the per-seed IGs; the occlusion uses the mean
+prediction of the seed models.
+"""
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 import torch
 
-from .features import Dataset
 from .training import WindowBatcher, predict
 
-CYCLIC = ["hour_sin", "hour_cos", "dow_sin", "dow_cos", "doy_sin", "doy_cos"]
-OFFDAY = ["is_weekend", "is_holiday", "is_offday"]
+
+def ensemble_predict(models, batcher: WindowBatcher, pos, transform=None) -> np.ndarray:
+    return np.mean([predict(m, batcher, pos, transform=transform) for m in models], axis=0)
 
 
-def feature_groups(ds: Dataset) -> dict[str, tuple[list[str], list[str]]]:
-    """group name -> (past columns, future columns)."""
-    return {
-        "Traffic history": (["traffic_scaled"], []),
-        "Temperature": (["temp_c"], []),
-        "Rain / snow": (["rain_log", "snow_log"], []),
-        "Clouds + weather type": (["clouds"] + ds.wx_cols, []),
-        "Past calendar (hour/day/season)": (CYCLIC, []),
-        "Future calendar (hour/day/season)": ([], CYCLIC),
-        "Weekend / holiday (past)": (OFFDAY, []),
-        "Weekend / holiday (future)": ([], OFFDAY),
-    }
-
-
-def permutation_importance(model, batcher: WindowBatcher, ds: Dataset, origins, n_repeats: int = 3) -> pd.DataFrame:
-    """Shuffle one feature group across test windows and measure how much MAE increases."""
-    y_true = ds.targets(origins)
-    base_mae = float(np.mean(np.abs(np.clip(predict(model, batcher, origins), 0, None) - y_true)))
-    rows = []
-    for group, (pcols, fcols) in feature_groups(ds).items():
-        pi = [batcher.past_cols.index(c) for c in pcols if c in batcher.past_cols]
-        fi = [batcher.fut_cols.index(c) for c in fcols]
-        if not pi and not fi:
-            continue
-        deltas = []
-        for rep in range(n_repeats):
-            gen = torch.Generator(device=batcher.device)
-            gen.manual_seed(rep)
-
-            def tf(xp, xf, pi=pi, fi=fi, gen=gen):
-                perm = torch.randperm(xp.shape[0], device=xp.device, generator=gen)
-                xp, xf = xp.clone(), xf.clone()
-                if pi:
-                    xp[:, :, pi] = xp[perm][:, :, pi]
-                if fi:
-                    xf[:, :, fi] = xf[perm][:, :, fi]
-                return xp, xf
-
-            p = np.clip(predict(model, batcher, origins, transform=tf), 0, None)
-            deltas.append(float(np.mean(np.abs(p - y_true))) - base_mae)
-        rows.append(dict(group=group, delta_MAE=float(np.mean(deltas)), std=float(np.std(deltas)),
-                         base_MAE=base_mae))
-    return pd.DataFrame(rows).sort_values("delta_MAE", ascending=False).reset_index(drop=True)
-
-
-def integrated_gradients(model, batcher: WindowBatcher, origins, steps: int = 32, target_h=None) -> np.ndarray:
-    """IG attributions of the past window, shape (N, L, F). Baseline = 0 (the training mean
-    after standardisation). target_h=None explains the sum of all 24 outputs."""
-    model.eval()
-    xp, xf, _, ys = batcher.get(origins)
-    xp = xp.float()
-    base = torch.zeros_like(xp)
-    total = torch.zeros_like(xp)
-    # cuDNN RNNs refuse backward() in eval mode -> disable cuDNN while computing gradients
-    with torch.backends.cudnn.flags(enabled=False):
-        for a in torch.linspace(0, 1, steps, device=batcher.device):
-            x = (base + a * (xp - base)).requires_grad_(True)
-            out = model(x, xf, ys)
-            out = out.sum() if target_h is None else out[:, target_h].sum()
-            g, = torch.autograd.grad(out, x)
-            total += g
-    return ((xp - base) * total / steps).detach().cpu().numpy()
-
-
-def ig_summary(model, batcher: WindowBatcher, ds: Dataset, origins, n_samples: int = 512,
-               seed: int = 42, chunk: int = 128):
-    """Returns (lag importance, feature importance, traffic-lag x horizon heatmap) DataFrames."""
+def sample_test_windows(pos, n: int = 256, seed: int = 42) -> np.ndarray:
     rng = np.random.default_rng(seed)
-    origins = np.asarray(origins)
-    sub = np.sort(rng.choice(origins, size=min(n_samples, len(origins)), replace=False))
-    ig = np.concatenate([integrated_gradients(model, batcher, sub[i:i + chunk]) for i in range(0, len(sub), chunk)])
-    abs_ig = np.abs(ig).mean(0)                                    # (L, F)
-    L = abs_ig.shape[0]
-    lag_df = pd.DataFrame({"hours_before_origin": np.arange(L - 1, -1, -1), "importance": abs_ig.sum(1)})
-    feat_df = (pd.DataFrame({"feature": batcher.past_cols, "importance": abs_ig.sum(0)})
-               .sort_values("importance", ascending=False).reset_index(drop=True))
+    pos = np.asarray(pos)
+    return pos[rng.choice(len(pos), size=min(n, len(pos)), replace=False)]
 
-    t_idx = batcher.past_cols.index("traffic_scaled") if "traffic_scaled" in batcher.past_cols else 0
-    heat_sub = sub[:256]
-    rows = {}
-    for h in range(0, ds.horizon, 3):
-        a = np.concatenate([integrated_gradients(model, batcher, heat_sub[i:i + chunk], steps=16, target_h=h)
-                            for i in range(0, len(heat_sub), chunk)])
-        rows[f"t+{h + 1}"] = np.abs(a[:, :, t_idx]).mean(0)
-    heat_df = pd.DataFrame(rows, index=np.arange(L - 1, -1, -1)).T
-    heat_df.columns.name = "hours_before_origin"
-    return lag_df, feat_df, heat_df
+
+def integrated_gradients(model, batcher: WindowBatcher, pos, steps: int = 24) -> np.ndarray:
+    """IG of the standardised output w.r.t. the standardised numeric window, shape (N, L, F)."""
+    model.eval()
+    num, cat, _ = batcher.get(pos)
+    num = num.float()
+    total = torch.zeros_like(num)
+    # cuDNN RNNs refuse backward() in eval mode -> disable cuDNN while taking gradients
+    with torch.backends.cudnn.flags(enabled=False):
+        for alpha in torch.linspace(0, 1, steps, device=num.device):
+            inp = (alpha * num).detach().requires_grad_(True)
+            grad, = torch.autograd.grad(model(inp, cat).sum(), inp)
+            total += grad
+    return (num * total / steps).detach().cpu().numpy()
+
+
+def ig_report(models, batcher: WindowBatcher, pos_sample, steps: int = 24, chunk: int = 64):
+    """Returns (feature table, lag table, (L, F) matrix of mean |IG|) for the seed ensemble."""
+    abs_sum = None
+    for i in range(0, len(pos_sample), chunk):
+        part = pos_sample[i:i + chunk]
+        ig = np.mean([integrated_gradients(m, batcher, part, steps) for m in models], axis=0)
+        s = np.abs(ig).sum(0)
+        abs_sum = s if abs_sum is None else abs_sum + s
+    mat = abs_sum / len(pos_sample)                                     # (L, F)
+    L = mat.shape[0]
+    feat = (pd.DataFrame({"feature": batcher.columns, "mean_abs_attr": mat.mean(0)})
+            .sort_values("mean_abs_attr", ascending=False).reset_index(drop=True))
+    lag = pd.DataFrame({"lag": np.arange(-L + 1, 1), "mean_abs_ig": mat.mean(1)})
+    return feat, lag, mat
+
+
+def weather_occlusion(models, batcher: WindowBatcher, pos_sample, vocab: dict) -> pd.DataFrame:
+    if not batcher.use_cat:
+        return pd.DataFrame()
+    inv = {v: k for k, v in vocab.items()}
+    _, cat, _ = batcher.get(pos_sample)
+    base = ensemble_predict(models, batcher, pos_sample)
+    rows = []
+    for code in torch.unique(cat).tolist():
+        if code == batcher.unk:
+            continue
+
+        def tf(x, c, code=code):
+            return x, torch.where(c == code, torch.full_like(c, batcher.unk), c)
+
+        p = ensemble_predict(models, batcher, pos_sample, transform=tf)
+        delta = float(np.mean(np.abs(p - base)))
+        rows.append(dict(weather_code=int(code), weather=inv.get(code, "Unknown"),
+                         windows_with_category=int((cat == code).any(dim=1).sum().item()),
+                         mean_abs_delta=delta, mean_abs_delta_scaled=delta / batcher.y_std))
+    return pd.DataFrame(rows).sort_values("mean_abs_delta", ascending=False).reset_index(drop=True)

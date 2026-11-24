@@ -16,3 +16,8 @@ desktop.ini
 result/_to_delete/
 
 # outputs/ and result/ ARE committed: the online dashboard reads outputs/
+
+# local scratch
+.incoming/
+outputs_smoke/
+data/processed/

@@ -1,12 +1,12 @@
-# Core libraries (notebook, train.py, dashboard)
+# core (training + notebook)
 numpy>=1.24
 pandas>=2.0
-scikit-learn>=1.3
+scipy>=1.10
 matplotlib>=3.7
-seaborn>=0.13
+torch>=2.3          # not needed for the dashboard or `python train.py --baselines-only`
+optuna>=3.5         # optional: without it tuning falls back to random search
+pyarrow>=14         # optional: read/write the group's parquet files (csv.gz otherwise)
+
+# dashboard
 streamlit>=1.32
 plotly>=5.18
-
-# PyTorch is needed only to TRAIN the deep models (already installed on Google Colab).
-# It is intentionally not listed here so the online dashboard stays light. To train locally:
-#   pip install torch

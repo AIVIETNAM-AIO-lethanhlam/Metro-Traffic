@@ -1,0 +1,3 @@
+model,seeds,val_MAE_mean,val_MAE_std,val_MAE_ensemble,test_MAE_mean,test_MAE_std,test_MAE_ensemble,test_MAE_ensemble_no_finetune,n_params,epochs_mean,seconds_total
+TCN,3,169.175,3.384,160.23,136.581,1.532,129.604,130.167,301005,21.333,137.5
+LSTM,3,176.753,1.271,172.391,136.901,1.125,133.069,134.199,102617,39.333,84.416

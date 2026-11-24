@@ -1,7 +1,19 @@
-"""Window batching on the GPU, training loop with early stopping, and prediction."""
+"""Window batching on the device, the group training protocol, fine-tuning and prediction.
+
+Same protocol as the group dl.py (docs/methodology.md §5):
+SmoothL1 (beta 0.5) on the standardised target, AdamW(lr, wd), ReduceLROnPlateau(factor 0.5,
+patience 2) on validation MAE, gradient clipping at 1.0, early stopping on validation MAE
+(vehicles/hour, min improvement 1e-4) with the best epoch restored. Fine-tuning: 8 further epochs
+on train + validation at lr / 5 with cosine decay (stepped once per epoch).
+
+Implementation differences that do not change the method: windows are cut from the grid kept on
+the device instead of a DataLoader over materialised windows (much faster), and the seed is set
+before the model is built so that the initial weights also depend on the seed.
+"""
 from __future__ import annotations
 
 import copy
+import math
 import random
 import time
 
@@ -10,14 +22,14 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
-from .features import SEASON_LAG, Dataset
+from .windows import WindowData
 
 
 def get_device() -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def seed_everything(seed: int = 42) -> None:
+def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -25,108 +37,104 @@ def seed_everything(seed: int = 42) -> None:
 
 
 class WindowBatcher:
-    """Cuts (past, future-calendar, target, seasonal-naive) windows straight from the full
-    series stored on the device, so the N x 168 x F tensor is never materialised."""
+    """Keeps the (T, F) grid on the device and cuts 168-h windows by index."""
 
-    def __init__(self, ds: Dataset, device: torch.device, past_cols: list[str] | None = None):
-        cols = past_cols or ds.past_cols
-        keep = [ds.past_cols.index(c) for c in cols]
-        self.past_cols = cols
-        self.fut_cols = ds.fut_cols
+    def __init__(self, wd: WindowData, device: torch.device, columns: list[str] | None = None,
+                 use_cat: bool | None = None):
+        cols = columns or wd.numeric
+        keep = [wd.numeric.index(c) for c in cols]
+        self.columns = list(cols)
+        self.use_cat = wd.use_cat if use_cat is None else (use_cat and wd.use_cat)
+        self.n_cat = wd.n_cat if self.use_cat else 0
+        self.unk = wd.unk
         self.device = device
-        self.Xp = torch.tensor(ds.X_past[:, keep], device=device)
-        self.Xf = torch.tensor(ds.X_fut, device=device)
-        self.y = torch.tensor(ds.y_sc, device=device)
-        self.po = torch.tensor(ds.past_off, device=device)
-        self.fo = torch.tensor(ds.fut_off, device=device)
-        self.y_mean, self.y_std = ds.y_mean, ds.y_std
-        self.lookback, self.horizon = ds.lookback, ds.horizon
+        self.X = torch.tensor(wd.X[:, keep], device=device)
+        self.C = torch.tensor(wd.C, device=device)
+        self.y = torch.tensor(wd.y_grid, device=device)
+        self.off = torch.arange(-wd.lookback + 1, 1, device=device)
+        self.y_mean, self.y_std = wd.y_mean, wd.y_std
+        self.lookback = wd.lookback
 
     @property
-    def n_past(self) -> int:
-        return self.Xp.shape[1]
+    def n_num(self) -> int:
+        return self.X.shape[1]
 
-    @property
-    def n_fut(self) -> int:
-        return self.Xf.shape[1]
+    def get(self, pos):
+        p = torch.as_tensor(np.asarray(pos), device=self.device)
+        idx = p[:, None] + self.off
+        return self.X[idx], (self.C[idx] if self.use_cat else None), self.y[p]
 
-    def get(self, origins):
-        o = torch.as_tensor(np.asarray(origins), device=self.device)
-        pi = o[:, None] + self.po
-        fi = o[:, None] + self.fo
-        return self.Xp[pi], self.Xf[fi], self.y[fi], self.y[fi - SEASON_LAG]
-
-    def iterate(self, origins, batch_size: int, shuffle: bool = False):
-        origins = np.asarray(origins)
-        order = np.random.permutation(len(origins)) if shuffle else np.arange(len(origins))
-        for i in range(0, len(origins), batch_size):
-            yield self.get(origins[order[i:i + batch_size]])
-
-
-def _amp(device) -> bool:
-    return device.type == "cuda"
+    def iterate(self, pos, batch_size: int, shuffle: bool = False, rng: np.random.Generator | None = None):
+        pos = np.asarray(pos)
+        order = (rng or np.random.default_rng()).permutation(len(pos)) if shuffle else np.arange(len(pos))
+        for i in range(0, len(pos), batch_size):
+            yield self.get(pos[order[i:i + batch_size]])
 
 
 @torch.no_grad()
-def predict(model: nn.Module, batcher: WindowBatcher, origins, batch_size: int = 1024, transform=None) -> np.ndarray:
-    """Forecasts in vehicles/hour, shape (N, H). `transform(xp, xf)` lets callers perturb inputs."""
+def predict(model: nn.Module, batcher: WindowBatcher, pos, batch_size: int = 1024, transform=None) -> np.ndarray:
+    """Forecasts in vehicles/hour (not clipped, as in the group code)."""
     model.eval()
     outs = []
-    for xp, xf, _, ys in batcher.iterate(origins, batch_size):
+    for x, c, _ in batcher.iterate(pos, batch_size):
         if transform is not None:
-            xp, xf = transform(xp, xf)
-        with torch.autocast(device_type=batcher.device.type, dtype=torch.float16, enabled=_amp(batcher.device)):
-            outs.append(model(xp, xf, ys).float().cpu().numpy())
-    return np.concatenate(outs) * batcher.y_std + batcher.y_mean
+            x, c = transform(x, c)
+        outs.append(model(x, c).float().cpu().numpy())
+    return np.concatenate(outs).astype(np.float64) * batcher.y_std + batcher.y_mean
 
 
-def train_model(model: nn.Module, batcher: WindowBatcher, idx_train, idx_val, y_val: np.ndarray,
-                epochs: int = 40, lr: float = 1e-3, wd: float = 1e-4, batch_size: int = 256,
-                patience: int = 6, verbose: bool = True):
-    """AdamW + Huber loss + ReduceLROnPlateau + gradient clipping + AMP + early stopping.
+def _epoch(model, batcher, pos, opt, loss_fn, batch_size, rng):
+    model.train()
+    total, n = 0.0, 0
+    for x, c, y in batcher.iterate(pos, batch_size, shuffle=True, rng=rng):
+        opt.zero_grad(set_to_none=True)
+        loss = loss_fn(model(x, c), y)
+        loss.backward()
+        nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        opt.step()
+        total += float(loss.detach()) * len(y)
+        n += len(y)
+    return total / max(n, 1)
 
-    Returns (model with best weights, history DataFrame, best val MAE, seconds).
-    """
-    device = batcher.device
-    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
+
+def train_model(model: nn.Module, batcher: WindowBatcher, pos_train, pos_val, y_val: np.ndarray, cfg: dict,
+                max_epochs: int = 80, patience: int = 10, verbose: bool = False):
+    """Returns (model with the best-epoch weights, history DataFrame, best val MAE, seconds)."""
+    rng = np.random.default_rng(int(cfg.get("seed", 42)))
+    opt = torch.optim.AdamW(model.parameters(), lr=cfg["lr"], weight_decay=cfg["wd"])
     sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, mode="min", factor=0.5, patience=2)
-    scaler = torch.amp.GradScaler("cuda", enabled=_amp(device))
     loss_fn = nn.SmoothL1Loss(beta=0.5)
-
-    best, best_state, wait, hist = np.inf, None, 0, []
+    best_state, best, bad, hist = None, math.inf, 0, []
     t0 = time.time()
-    for ep in range(1, epochs + 1):
-        model.train()
-        total, n = 0.0, 0
-        for xp, xf, y, ys in batcher.iterate(idx_train, batch_size, shuffle=True):
-            opt.zero_grad(set_to_none=True)
-            with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=_amp(device)):
-                loss = loss_fn(model(xp, xf, ys).float(), y)
-            scaler.scale(loss).backward()
-            scaler.unscale_(opt)
-            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            scaler.step(opt)
-            scaler.update()
-            total += loss.item() * len(y)
-            n += len(y)
-
-        val_mae = float(np.mean(np.abs(np.clip(predict(model, batcher, idx_val), 0, None) - y_val)))
+    for epoch in range(1, max_epochs + 1):
+        tr = _epoch(model, batcher, pos_train, opt, loss_fn, int(cfg["batch"]), rng)
+        val_mae = float(np.mean(np.abs(predict(model, batcher, pos_val) - y_val)))
+        if not np.isfinite(val_mae):
+            val_mae = math.inf
         sched.step(val_mae)
-        lr_now = opt.param_groups[0]["lr"]
-        hist.append(dict(epoch=ep, train_loss=total / n, val_mae=val_mae, lr=lr_now))
-        improved = val_mae < best - 1e-3
-        if improved:
-            best, wait = val_mae, 0
-            best_state = copy.deepcopy(model.state_dict())
+        hist.append(dict(epoch=epoch, train_loss=tr, val_mae=val_mae, lr=opt.param_groups[0]["lr"]))
+        if val_mae < best - 1e-4:
+            best, best_state, bad = val_mae, copy.deepcopy(model.state_dict()), 0
         else:
-            wait += 1
+            bad += 1
         if verbose:
-            print(f"  epoch {ep:02d} | train_loss {total / n:.4f} | val_MAE {val_mae:7.1f} | lr {lr_now:.1e}"
-                  + ("  *" if improved else ""))
-        if wait >= patience:
-            if verbose:
-                print(f"  early stopping at epoch {ep}")
+            print(f"    epoch {epoch:02d} | loss {tr:.4f} | val MAE {val_mae:7.1f} | lr {hist[-1]['lr']:.1e}")
+        if bad >= patience:
             break
-    if best_state is not None:        # None only if validation MAE was NaN in every epoch
+    if best_state is not None:
         model.load_state_dict(best_state)
     return model, pd.DataFrame(hist), best, time.time() - t0
+
+
+def fine_tune(model: nn.Module, batcher: WindowBatcher, pos_trainval, cfg: dict, epochs: int = 8):
+    """Group fine-tuning stage on a copy of the model; returns (fine-tuned copy, epoch losses)."""
+    model = copy.deepcopy(model)
+    rng = np.random.default_rng(int(cfg.get("seed", 42)) + 1000)
+    opt = torch.optim.AdamW(model.parameters(), lr=cfg["lr"] / 5, weight_decay=cfg["wd"])
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(epochs, 1))
+    loss_fn = nn.SmoothL1Loss(beta=0.5)
+    losses = []
+    for _ in range(epochs):
+        losses.append(_epoch(model, batcher, pos_trainval, opt, loss_fn, int(cfg["batch"]), rng))
+        sched.step()
+    return model, losses

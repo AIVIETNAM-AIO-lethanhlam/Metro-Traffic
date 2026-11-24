@@ -1,49 +1,65 @@
-"""Evaluation metrics and a small results tracker."""
+"""Point-forecast metrics (same definitions as the group's evaluate.py) and the Diebold-Mariano test."""
 from __future__ import annotations
 
+import math
+
 import numpy as np
-import pandas as pd
 
 
-def compute_metrics(y_true, y_pred, y_naive=None) -> dict:
-    """MAE, RMSE, sMAPE (%), R2 and rMAE (= MAE / MAE of the seasonal-naive forecast)."""
-    y_true = np.asarray(y_true, float)
-    y_pred = np.clip(np.asarray(y_pred, float), 0, None)
-    err = y_pred - y_true
-    out = dict(
-        MAE=float(np.mean(np.abs(err))),
-        RMSE=float(np.sqrt(np.mean(err ** 2))),
-        sMAPE=float(100 * np.mean(2 * np.abs(err) / (np.abs(y_true) + np.abs(y_pred) + 1e-8))),
-        R2=float(1 - np.sum(err ** 2) / np.sum((y_true - y_true.mean()) ** 2)),
-    )
-    if y_naive is not None:
-        out["rMAE"] = out["MAE"] / float(np.mean(np.abs(np.asarray(y_naive) - y_true)))
+def mae(y, p) -> float:
+    return float(np.mean(np.abs(np.asarray(y, float) - np.asarray(p, float))))
+
+
+def rmse(y, p) -> float:
+    return float(np.sqrt(np.mean((np.asarray(y, float) - np.asarray(p, float)) ** 2)))
+
+
+def r2(y, p) -> float:
+    y, p = np.asarray(y, float), np.asarray(p, float)
+    ss = np.sum((y - y.mean()) ** 2)
+    return float(1 - np.sum((y - p) ** 2) / ss) if ss > 0 else float("nan")
+
+
+def smape(y, p) -> float:
+    """100 * mean(2|p - y| / (|y| + |p|)); a term is 0 when both are 0."""
+    y, p = np.asarray(y, float), np.asarray(p, float)
+    den = np.abs(y) + np.abs(p)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = np.where(den > 0, 2 * np.abs(p - y) / den, 0.0)
+    return float(100 * t.mean())
+
+
+def mase_scale(y_train, lag24_train) -> float:
+    """In-sample MAE of the seasonal-naive (lag-24) forecast on the training targets."""
+    y, l = np.asarray(y_train, float), np.asarray(lag24_train, float)
+    ok = ~np.isnan(l)
+    return float(np.mean(np.abs(y[ok] - l[ok])))
+
+
+def all_metrics(y, p, scale: float | None = None) -> dict:
+    out = dict(MAE=mae(y, p), RMSE=rmse(y, p), R2=r2(y, p), sMAPE=smape(y, p))
+    if scale:
+        out["MASE"] = out["MAE"] / scale
     return out
 
 
-class ResultsTracker:
-    """Keeps test metrics and test predictions of every model in one place."""
+def _norm_sf(z: float) -> float:
+    return 0.5 * math.erfc(z / math.sqrt(2))
 
-    def __init__(self, y_true: np.ndarray, y_naive: np.ndarray):
-        self.y_true = y_true
-        self.y_naive = y_naive
-        self.results: dict[str, dict] = {}
-        self.preds: dict[str, np.ndarray] = {}
 
-    def report(self, name: str, pred: np.ndarray, extra: dict | None = None, verbose: bool = True) -> dict:
-        m = compute_metrics(self.y_true, pred, self.y_naive)
-        if extra:
-            m.update(extra)
-        self.results[name] = m
-        self.preds[name] = np.clip(np.asarray(pred, np.float32), 0, None)
-        if verbose:
-            print(f"{name:34s} MAE={m['MAE']:7.1f} | RMSE={m['RMSE']:7.1f} | sMAPE={m['sMAPE']:5.2f}% "
-                  f"| R2={m['R2']:.4f} | rMAE={m['rMAE']:.3f}")
-        return m
+def diebold_mariano(y, p_a, p_b, lags: int = 24) -> dict:
+    """DM test on absolute errors, d_t = |e_a| - |e_b|, Newey-West variance with `lags` lags.
 
-    def table(self) -> pd.DataFrame:
-        df = pd.DataFrame(self.results).T
-        cols = [c for c in ["MAE", "RMSE", "sMAPE", "R2", "rMAE", "val_MAE", "params", "train_sec"] if c in df.columns]
-        df = df[cols].sort_values("MAE")
-        df.index.name = "model"
-        return df
+    mean_d < 0 means model A is more accurate. Two-sided p-value from the normal distribution.
+    """
+    y = np.asarray(y, float)
+    d = np.abs(y - np.asarray(p_a, float)) - np.abs(y - np.asarray(p_b, float))
+    n = len(d)
+    dc = d - d.mean()
+    var = np.dot(dc, dc) / n
+    for k in range(1, min(lags, n - 1) + 1):
+        var += 2 * (1 - k / (lags + 1)) * np.dot(dc[k:], dc[:-k]) / n
+    if var <= 0:
+        return dict(mean_d=float(d.mean()), dm_stat=float("nan"), p_value=float("nan"))
+    stat = d.mean() / math.sqrt(var / n)
+    return dict(mean_d=float(d.mean()), dm_stat=float(stat), p_value=float(2 * _norm_sf(abs(stat))))

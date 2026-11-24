@@ -1,0 +1,5 @@
+stage,features,n_numeric,weather_main,seeds,val_MAE,val_std,test_MAE,test_std,val_gain_vs_previous
+1,calendar,14,False,3,274.424,0.805,195.651,1.623,
+2,+ weather,20,True,3,277.064,4.201,233.725,5.286,-2.64
+3,+ lags,37,True,3,174.291,2.521,144.396,2.789,102.773
+4,+ engineered (full),46,True,3,169.175,3.384,140.707,2.308,5.116

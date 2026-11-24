@@ -1,17 +1,41 @@
 {
-  "key": "TCN",
-  "name": "DL-TCN",
-  "val_MAE": 214.3956656711328,
-  "spec": {
-    "kind": "TCN",
-    "hp": {
-      "channels": 64,
-      "kernel": 3,
-      "dropout": 0.1
-    },
-    "lr": 0.001,
-    "wd": 0.0001,
-    "batch_size": 256,
-    "head_hidden": 256
-  }
+  "model": "TCN",
+  "hp": {
+    "hidden": 96,
+    "layers": 2,
+    "dropout": 0.09057299356000592,
+    "lr": 0.0009519754482692679,
+    "wd": 8.61257919259488e-06,
+    "batch": 256,
+    "emb": 4
+  },
+  "tuned": true,
+  "seeds": [
+    42,
+    43,
+    44
+  ],
+  "val_MAE_ensemble": 160.23002865244564,
+  "test": {
+    "MAE": 129.60401736920917,
+    "RMSE": 190.1171643454793,
+    "R2": 0.9903012289174625,
+    "sMAPE": 5.787108177728584,
+    "MASE": 0.23785867251744908
+  },
+  "test_no_finetune": {
+    "MAE": 130.16740956679348,
+    "RMSE": 191.72394696756467,
+    "R2": 0.9901365970652839,
+    "sMAPE": 5.886619180705733,
+    "MASE": 0.23889265065288248
+  },
+  "finetune_epochs": 8,
+  "n_params": 301005,
+  "selection": "lowest validation MAE of the seed ensemble before fine-tuning",
+  "weights": [
+    "best_model_seed42.pt",
+    "best_model_seed43.pt",
+    "best_model_seed44.pt"
+  ]
 }

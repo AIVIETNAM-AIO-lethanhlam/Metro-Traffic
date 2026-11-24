@@ -1,0 +1,12 @@
+model_a,model_b,primary,mean_d,dm_stat,p_value,better
+TCN,ML: lightgbm_blend,True,9.9293,5.7926,0.0,B
+TCN,Persistence (t-1),False,-445.7224,-30.9925,0.0,A
+TCN,Seasonal naive (t-24),False,-384.1475,-10.2242,0.0,A
+TCN,Hour-of-week mean,False,-89.6258,-5.1532,0.0,A
+TCN,LSTM (no fine-tune),False,-4.5951,-2.4949,0.0126,A
+TCN,LSTM,False,-3.4646,-1.9873,0.0469,A
+TCN,TCN (no fine-tune),False,-0.5634,-0.4814,0.6302,no significant difference
+TCN,ML: ridge,False,-14.843,-2.9094,0.0036,A
+TCN,ML: random_forest,False,8.0565,4.425,0.0,B
+TCN,ML: lightgbm,False,6.4019,3.493,0.0005,B
+TCN,ML: xgboost,False,2.854,1.5065,0.1319,no significant difference

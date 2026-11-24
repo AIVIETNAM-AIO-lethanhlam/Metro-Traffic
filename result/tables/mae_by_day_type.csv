@@ -1,4 +1,4 @@
-day_type,Daily-naive,Seasonal-naive (weekly),"Ridge (linear, lags)",DL-MLP,DL-LSTM,DL-GRU,DL-TCN,DL-PatchTransformer,DL-GRU (tuned),Ablation: DL-TCN without weather
-Weekday,465.78,295.06,228.11,236.92,253.98,236.26,201.49,238.13,225.16,190.8
-Weekend,793.94,385.28,297.28,305.91,319.67,307.28,262.73,303.58,284.98,254.93
-Holiday,706.25,1068.99,680.02,639.53,542.63,417.87,372.96,643.09,477.31,393.94
+day_type,Persistence (t-1),Seasonal naive (t-24),Hour-of-week mean,LSTM,TCN,ML: ridge,ML: random_forest,ML: lightgbm,ML: xgboost,ML: lightgbm_blend,n
+Holiday,320.38,742.16,1354.14,245.5,199.87,543.83,187.73,186.97,210.37,173.54,74
+Weekday,662.63,418.94,177.05,125.67,123.8,132.08,115.9,117.83,120.8,114.46,1815
+Weekend,393.34,716.08,209.54,139.74,136.57,135.18,128.52,129.77,132.77,126.81,767

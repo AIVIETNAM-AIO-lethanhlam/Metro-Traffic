@@ -1,5 +1,5 @@
 # Dependencies of the Streamlit dashboard only (used by Streamlit Community Cloud).
-# No PyTorch / scikit-learn needed: the dashboard just reads the files in outputs/.
+# No PyTorch needed: the dashboard just reads the files in outputs/.
 streamlit>=1.32
 plotly>=5.18
 pandas>=2.0

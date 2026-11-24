@@ -1,0 +1,4 @@
+day_type,Daily-naive,Seasonal-naive (weekly),"Ridge (linear, lags)",DL-MLP,DL-LSTM,DL-GRU,DL-TCN,DL-PatchTransformer,DL-GRU (tuned),Ablation: DL-TCN without weather
+Weekday,465.78,295.06,228.11,236.92,253.98,236.26,201.49,238.13,225.16,190.8
+Weekend,793.94,385.28,297.28,305.91,319.67,307.28,262.73,303.58,284.98,254.93
+Holiday,706.25,1068.99,680.02,639.53,542.63,417.87,372.96,643.09,477.31,393.94

@@ -1,0 +1,10 @@
+weather_code,weather,windows_with_category,mean_abs_delta,mean_abs_delta_scaled
+6,Rain,255,18.337,0.0093
+0,Clear,237,17.5802,0.0089
+1,Clouds,256,17.4223,0.0089
+5,Mist,239,5.356,0.0027
+9,Thunderstorm,212,3.696,0.0019
+4,Haze,191,1.8975,0.001
+2,Drizzle,159,1.0983,0.0006
+3,Fog,116,0.8933,0.0005
+7,Smoke,12,0.0266,0.0

@@ -1,5 +1,5 @@
-"""Save / load experiment outputs. The Streamlit dashboard only reads these files,
-so it does not need PyTorch, a GPU or the raw data."""
+"""Save / load experiment outputs. The dashboard and the export script only read these
+files, so they need neither PyTorch, a GPU nor the raw data."""
 from __future__ import annotations
 
 import json
@@ -8,19 +8,13 @@ import os
 import numpy as np
 import pandas as pd
 
-
-
-def day_type(is_holiday, is_weekend) -> np.ndarray:
-    # same as features.day_type, duplicated so the dashboard does not need scikit-learn
-    return np.select([np.asarray(is_holiday) == 1, np.asarray(is_weekend) == 1],
-                     ["Holiday", "Weekend"], "Weekday")
-
 FILES = dict(
-    config="config.json", quality="data_quality.json", splits="split_info.csv",
-    results="results_test.csv", predictions="predictions_test.npz", model_names="model_names.json",
-    histories="histories.json", tuning="tuning_log.csv", best="best_model.json", weights="best_model.pt",
-    perm="permutation_importance.csv", ig_lag="ig_lag.csv", ig_features="ig_features.csv",
-    ig_heatmap="ig_horizon_heatmap.csv", hourly="hourly_clean.csv.gz",
+    config="config.json", data="data_meta.json", splits="split_info.csv", results="results.csv",
+    seeds="seed_results.csv", screening="screening.csv", tuning="tuning_log.csv", best="best_model.json",
+    histories="histories.json", predictions="predictions.npz", ablation="ablation.csv",
+    ig_features="ig_features.csv", ig_lag="ig_lag.csv", ig_matrix="ig_matrix.csv",
+    occlusion="weather_occlusion.csv", groups="group_importance.csv", dm="dm_tests.csv",
+    hourly="hourly.csv.gz",
 )
 
 
@@ -30,57 +24,90 @@ def _p(out_dir, key):
 
 def _json(path, obj):
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(obj, f, indent=2, default=str)
+        json.dump(obj, f, indent=2, default=lambda o: o.item() if hasattr(o, "item") else str(o))
+
+
+def _ns(times) -> np.ndarray:
+    return pd.to_datetime(np.asarray(times)).values.astype("datetime64[ns]").astype(np.int64)
 
 
 def save_experiment(exp) -> None:
-    out, ds, tr = exp.cfg.out_dir, exp.ds, exp.tracker
+    out = exp.cfg.out_dir
     os.makedirs(out, exist_ok=True)
+    wd, frame = exp.wd, exp.frame
 
     exp.cfg.save(_p(out, "config"))
-    _json(_p(out, "quality"), exp.quality)
-    ds.split_summary().to_csv(_p(out, "splits"), index=False)
-    tr.table().to_csv(_p(out, "results"))
+    _json(_p(out, "data"), dict(source=exp.source, audit=exp.meta.get("audit", {}), split=exp.meta.get("split", {}),
+                                numeric_features=exp.numeric, categorical_features=["weather_main"],
+                                weather_vocab=wd.vocab, lookback=wd.lookback, nan_imputed=wd.nan_imputed,
+                                mase_scale=exp.scale, timings=exp.timings, device=str(exp.device)))
+    rows = []
+    for s in ("train", "val", "test"):
+        part = frame[frame["split"] == s]
+        rows.append(dict(split=s, rows=len(part), start=part["date_time"].min(), end=part["date_time"].max(),
+                         mean_volume=part["traffic_volume"].mean()))
+    pd.DataFrame(rows).to_csv(_p(out, "splits"), index=False)
 
-    names = list(tr.preds)
-    pos = ds.target_pos(ds.idx_test)
-    np.savez_compressed(
-        _p(out, "predictions"),
-        origins=ds.idx_test,
-        target_times=ds.times.values[pos].astype("datetime64[ns]").astype(np.int64),
-        y_true=tr.y_true.astype(np.float32),
-        preds=np.stack([tr.preds[n] for n in names]).astype(np.float32),
-        is_holiday=ds.feat["is_holiday"].to_numpy()[pos].astype(np.int8),
-        is_weekend=ds.feat["is_weekend"].to_numpy()[pos].astype(np.int8),
-    )
-    _json(_p(out, "model_names"), names)
-    _json(_p(out, "histories"), {k: v.to_dict(orient="records") for k, v in exp.histories.items()})
-    if len(exp.tune_log):
-        exp.tune_log.to_csv(_p(out, "tuning"), index=False)
+    exp.results_table().to_csv(_p(out, "results"), index=False)
+    if exp.seed_rows:
+        pd.DataFrame(exp.seed_rows).to_csv(_p(out, "seeds"), index=False)
+    for key, attr in [("screening", "screening"), ("tuning", "tune_log"), ("ablation", "ablation"),
+                      ("ig_features", "ig_features"), ("ig_lag", "ig_lag"), ("occlusion", "occlusion"),
+                      ("groups", "group_importance"), ("dm", "dm")]:
+        df = getattr(exp, attr, None)
+        if df is not None and len(df):
+            df.to_csv(_p(out, key), index=False)
+    if exp.ig_matrix is not None:
+        exp.ig_matrix.to_csv(_p(out, "ig_matrix"))
+    _json(_p(out, "histories"), exp.histories)
+
+    arrays = {}
+    for split in ("val", "test"):
+        names = list(exp.preds[split])
+        part = frame[frame["split"] == split]
+        arrays[f"{split}_times"] = _ns(wd.times[split])
+        arrays[f"{split}_y"] = wd.y[split].astype(np.float32)
+        arrays[f"{split}_names"] = np.array(names, dtype="U")
+        arrays[f"{split}_preds"] = np.stack([exp.preds[split][n] for n in names]).astype(np.float32)
+        arrays[f"{split}_is_holiday"] = part["is_holiday"].to_numpy(np.int8)
+        arrays[f"{split}_is_weekend"] = part["is_weekend"].to_numpy(np.int8)
+        arrays[f"{split}_weather"] = part["weather_main"].astype(str).to_numpy().astype("U")
     if exp.best is not None:
-        _json(_p(out, "best"), exp.best)
-        import torch
-        torch.save(exp.best_model.state_dict(), _p(out, "weights"))
-    for key, df, idx in [("perm", exp.perm_importance, False), ("ig_lag", exp.ig_lag, False),
-                         ("ig_features", exp.ig_features, False), ("ig_heatmap", exp.ig_heatmap, True)]:
-        if df is not None:
-            df.to_csv(_p(out, key), index=idx)
+        seeds = exp.final[exp.best["model"]]["seed_test"]
+        arrays["seed_names"] = np.array([f"seed {s}" for s in seeds])
+        arrays["seed_preds"] = np.stack(list(seeds.values())).astype(np.float32)
+    np.savez_compressed(_p(out, "predictions"), **arrays)
 
-    h = exp.hourly
-    clean = pd.DataFrame({
-        "date_time": h.index, "traffic_volume": h["traffic_volume"].values,
-        "temp_c": (h["temp"] - 273.15).values, "rain_1h": h["rain_1h"].values, "snow_1h": h["snow_1h"].values,
-        "clouds_all": h["clouds_all"].values, "weather_main": h["weather_main"].values,
-        "is_holiday": h["is_holiday"].values.astype(int), "holiday_name": h["holiday_name"].values,
-        "is_weekend": (h.index.dayofweek >= 5).astype(int), "is_imputed": h["is_imputed"].values.astype(int),
-        "valid": h["valid"].values.astype(int)})
-    clean.to_csv(_p(out, "hourly"), index=False, compression="gzip")
+    if exp.best is not None:
+        best = dict(exp.best)
+        best["weights"] = []
+        try:
+            import torch
+            for seed, m in zip(exp.cfg.seeds, exp.final[best["model"]].get("ft", [])):
+                fn = f"best_model_seed{seed}.pt"
+                torch.save(m.state_dict(), os.path.join(out, fn))
+                best["weights"].append(fn)
+        except Exception as e:                       # weights are optional for the dashboard
+            print("could not save weights:", e)
+        _json(_p(out, "best"), best)
+
+    g = exp.grid
+    split = pd.Series("", index=g.index)
+    split.loc[frame["hour_index"].to_numpy()] = frame["split"].to_numpy()
+    hourly = pd.DataFrame({
+        "date_time": g["date_time"], "traffic_volume": g["traffic_volume"], "observed": g["observed"].astype(int),
+        "temp_c": g["temp_c"], "rain_1h": g["rain_1h"], "snow_1h": g["snow_1h"], "clouds_all": g["clouds_all"],
+        "weather_main": g["weather_main"], "is_holiday": g["is_holiday"], "is_weekend": g["is_weekend"],
+        "split": split.to_numpy()})
+    hourly.to_csv(_p(out, "hourly"), index=False, compression="gzip")
+
+
+def day_type(is_holiday, is_weekend) -> np.ndarray:
+    return np.select([np.asarray(is_holiday) == 1, np.asarray(is_weekend) == 1], ["Holiday", "Weekend"], "Weekday")
 
 
 def load_artifacts(out_dir: str) -> dict:
     """Everything that exists in `out_dir`; missing files map to None."""
-    a = {}
-
     def read(key, fn):
         path = _p(out_dir, key)
         return fn(path) if os.path.exists(path) else None
@@ -89,27 +116,25 @@ def load_artifacts(out_dir: str) -> dict:
         with open(p, encoding="utf-8") as f:
             return json.load(f)
 
-    a["config"] = read("config", rjson)
-    a["quality"] = read("quality", rjson)
-    a["splits"] = read("splits", pd.read_csv)
-    a["results"] = read("results", lambda p: pd.read_csv(p, index_col=0))
-    a["histories"] = read("histories", lambda p: {k: pd.DataFrame(v) for k, v in rjson(p).items()})
-    a["tuning"] = read("tuning", pd.read_csv)
-    a["best"] = read("best", rjson)
-    a["perm"] = read("perm", pd.read_csv)
-    a["ig_lag"] = read("ig_lag", pd.read_csv)
-    a["ig_features"] = read("ig_features", pd.read_csv)
-    a["ig_heatmap"] = read("ig_heatmap", lambda p: pd.read_csv(p, index_col=0))
-    a["hourly"] = read("hourly", lambda p: pd.read_csv(p, parse_dates=["date_time"]))
+    A = {k: read(k, pd.read_csv) for k in ("splits", "results", "seeds", "screening", "tuning", "ablation",
+                                            "ig_features", "ig_lag", "occlusion", "groups", "dm")}
+    A["config"] = read("config", rjson)
+    A["data"] = read("data", rjson)
+    A["best"] = read("best", rjson)
+    A["histories"] = read("histories", lambda p: {k: pd.DataFrame(v) for k, v in rjson(p).items()})
+    A["ig_matrix"] = read("ig_matrix", lambda p: pd.read_csv(p, index_col=0))
+    A["hourly"] = read("hourly", lambda p: pd.read_csv(p, parse_dates=["date_time"]))
 
-    names = read("model_names", rjson)
-    npz = read("predictions", lambda p: dict(np.load(p)))
-    if names is not None and npz is not None:
-        a["predictions"] = dict(
-            origins=npz["origins"],
-            target_times=pd.to_datetime(npz["target_times"].ravel()).values.reshape(npz["target_times"].shape),
-            y_true=npz["y_true"], preds={n: npz["preds"][i] for i, n in enumerate(names)},
-            day_type=day_type(npz["is_holiday"], npz["is_weekend"]))
-    else:
-        a["predictions"] = None
-    return a
+    npz = read("predictions", lambda p: dict(np.load(p, allow_pickle=False)))
+    A["predictions"] = None
+    if npz is not None:
+        P = {}
+        for s in ("val", "test"):
+            P[s] = dict(times=pd.to_datetime(npz[f"{s}_times"]), y=npz[f"{s}_y"].astype(float),
+                        preds={str(n): npz[f"{s}_preds"][i].astype(float) for i, n in enumerate(npz[f"{s}_names"])},
+                        day_type=day_type(npz[f"{s}_is_holiday"], npz[f"{s}_is_weekend"]),
+                        weather=npz[f"{s}_weather"].astype(str))
+        if "seed_preds" in npz:
+            P["seeds"] = {str(n): npz["seed_preds"][i].astype(float) for i, n in enumerate(npz["seed_names"])}
+        A["predictions"] = P
+    return A

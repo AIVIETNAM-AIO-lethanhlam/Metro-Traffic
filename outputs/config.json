@@ -1,28 +1,31 @@
 {
-  "data_path": "data/Metro_Interstate_Traffic_Volume.csv.gz",
-  "out_dir": "outputs",
-  "lookback": 168,
-  "horizon": 24,
-  "max_gap": 3,
-  "train_end": "2016-12-31 23:00:00",
-  "val_end": "2017-12-31 23:00:00",
-  "batch_size": 256,
-  "epochs": 40,
-  "patience": 6,
-  "lr": 0.001,
-  "weight_decay": 0.0001,
-  "seed": 42,
+  "raw_path": "/content/drive/MyDrive/P4AIDS/Metro traffic/data/Metro_Interstate_Traffic_Volume.csv.gz",
+  "processed_dir": "/content/drive/MyDrive/P4AIDS/Metro traffic/data/processed",
+  "out_dir": "/content/drive/MyDrive/P4AIDS/Metro traffic/outputs",
+  "ml_results_dir": "/content/drive/MyDrive/P4AIDS/Metro traffic/ml_results",
   "models": [
-    "MLP",
     "LSTM",
-    "GRU",
-    "TCN",
-    "PatchTransformer"
+    "TCN"
   ],
+  "seeds": [
+    42,
+    43,
+    44
+  ],
+  "max_epochs": 80,
+  "patience": 10,
+  "finetune_epochs": 8,
   "run_tuning": true,
-  "tune_top_k": 2,
-  "n_trials": 8,
-  "tune_epochs": 15,
+  "n_trials": 10,
+  "tune_max_epochs": 25,
+  "tune_patience": 5,
   "run_ablation": true,
-  "ig_samples": 512
+  "ablation_seeds": [
+    42,
+    43,
+    44
+  ],
+  "ig_samples": 256,
+  "ig_steps": 24,
+  "drop_leaky_features": false
 }

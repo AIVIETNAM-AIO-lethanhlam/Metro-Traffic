@@ -1,0 +1,11 @@
+model,family,variant,MAE,RMSE,R2,sMAPE,MASE
+ML: lightgbm_blend,ML,,152.527,246.448,0.985,6.445,0.28
+ML: lightgbm,ML,,159.86,257.468,0.984,6.88,0.293
+TCN (no fine-tune),DL,"ensemble, train only",160.23,250.25,0.985,7.128,0.294
+ML: random_forest,ML,,164.251,267.379,0.983,6.812,0.301
+ML: xgboost,ML,,166.291,263.905,0.983,7.608,0.305
+LSTM (no fine-tune),DL,"ensemble, train only",172.391,266.899,0.983,8.202,0.316
+ML: ridge,ML,,178.629,275.474,0.981,8.857,0.328
+Hour-of-week mean,Baseline,,315.719,507.047,0.937,12.156,0.579
+Persistence (t-1),Baseline,,597.412,827.739,0.833,26.68,1.096
+Seasonal naive (t-24),Baseline,,608.455,1068.196,0.722,23.52,1.117
